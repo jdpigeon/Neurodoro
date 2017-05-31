@@ -40,7 +40,6 @@ public class MuseRecorder extends ReactContextBaseJavaModule {
     MuseDataSource data;
     public DataListener dataListener;
     public CircularBuffer eegBuffer;
-    public double[] newData = new double[4];
     public String userName = "";
     public int fileNum = 0;
 
@@ -166,22 +165,45 @@ public class MuseRecorder extends ReactContextBaseJavaModule {
 
     // Listener that receives incoming data from the Muse. Will run receiveMuseDataPacket
     // Will call receiveMuseDataPacket as data comes in around 220hz (250hz for Muse 2016)
-    class DataListener extends MuseDataListener {
+    public final class DataListener extends MuseDataListener {
+        private double[] newData;
+        // Filter variables
+        public boolean filterOn = false;
+        public Filter bandstopFilter;
+        public double[][] bandstopFiltState;
+        public double[] bandstopFiltResult;
 
         DataListener() {
+            if (appState.connectedMuse.isLowEnergy()) {
+                filterOn = true;
+                bandstopFilter = new Filter(256, "bandstop", 5, 55, 65);
+                bandstopFiltState = new double[4][bandstopFilter.getNB()];
+            }
+            newData = new double[4];
         }
 
         @Override
         public void receiveMuseDataPacket(final MuseDataPacket p, final Muse muse) {
             getEegChannelValues(newData, p);
 
+            // BandStop filter for 2016 Muses
+            if(filterOn) {
+                bandstopFiltState = bandstopFilter.transform(newData, bandstopFiltState);
+                newData = bandstopFilter.extractFilteredSamples(bandstopFiltState);
+            }
+
+            // Optional filter for filtered data
             if(recorderDataType.contains("FILTERED")) {
                 // Filter new raw sample
-                bandPassFiltState = bandPassFilter.transform(newData, bandPassFiltState);
+                bandPassFiltState = bandPassFilter.transform(newData,
+                        bandPassFiltState);
                 filtResult = bandPassFilter.extractFilteredSamples(bandPassFiltState);
-                eegBuffer.update(filtResult);
+                // Adds datapoint from all 4 channels to csv
+                data.fileWriter.addEEGDataToFile(filtResult);
             } else {
-                eegBuffer.update(newData);
+
+                // Adds datapoint from all 4 channels to csv
+                data.fileWriter.addEEGDataToFile(newData);
             }
         }
 
@@ -275,7 +297,7 @@ public class MuseRecorder extends ReactContextBaseJavaModule {
 
     }
 
-    // Runs adds raw or filtered EEG to a csv as it comes in
+    // Runnable adds raw or filtered EEG to a csv as it comes in
     public final class EEGDataSource extends MuseDataSource implements Runnable {
         private int stepSize = 1;
         public double[] latestSamples;
@@ -291,15 +313,7 @@ public class MuseRecorder extends ReactContextBaseJavaModule {
                 keepRunning = true;
                 while (keepRunning) {
                     if (eegBuffer.getPts() >= stepSize) {
-
-                        // Extract latest samples
-                        latestSamples = eegBuffer.extract(1)[0];
-
-                        // Adds datapoint from all 4 channels to csv
-                        fileWriter.addEEGDataToFile(latestSamples);
-
-                        // resets the 'points-since-dataSource-read' value
-                        eegBuffer.resetPts();
+                        // Doesn't need to do anything
                     }
                 }
             } catch (Exception e) {}
